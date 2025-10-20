@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Pendeteksi Wajah Lelah (Interaktif)</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap" rel="stylesheet">
+</head>
+<body>
+  <header class="navbar">
+    <h1 class="logo">Drowsy Detector</h1>
+  </header>
+
+  <main class="container">
+    <section class="video-card">
+      <video id="video" autoplay playsinline></video>
+      <canvas id="canvas" style="display:none;"></canvas>
+      <div class="overlay">
+        <p id="status" class="status-text">Menunggu...</p>
+      </div>
+    </section>
+
+    <section class="info-panel">
+      <div class="info-item">
+        <span class="label">EAR:</span>
+        <span id="ear" class="value">—</span>
+      </div>
+      <div class="progress-container">
+        <div id="progressBar" class="progress-bar"></div>
+      </div>
+      <p class="note">⚠️ EAR rendah menandakan mata hampir tertutup. Sesuaikan threshold untuk kondisi kamu.</p>
+    </section>
+
+    <section class="controls">
+      <div class="input-group">
+        <label>Interval snapshot (ms)</label>
+        <input id="interval" type="number" value="800" />
+      </div>
+      <div class="btn-group">
+        <button id="startBtn">Mulai Deteksi</button>
+        <button id="stopBtn" disabled>Berhenti</button>
+      </div>
+    </section>
+
+    <audio id="alarmAudio" src="https://actions.google.com/sounds/v1/alarms/alarm_clock.ogg" preload="auto"></audio>
+  </main>
+
+  <footer class="footer">
+    <p>© 2025 Drowsy Detector by Rivaldi Hidayatullah</p>
+  </footer>
+
+  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const earSpan = document.getElementById('ear');
+    const statusSpan = document.getElementById('status');
+    const startBtn = document.getElementById('startBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const intervalInput = document.getElementById('interval');
+    const alarm = document.getElementById('alarmAudio');
+    const progressBar = document.getElementById('progressBar');
+
+    let running = false;
+    let timer = null;
+    let consecCount = 0;
+    const EAR_THRESHOLD = 0.20;
+    const CONSEC_FRAMES = 6;
+
+    async function startCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+        video.srcObject = stream;
+        await video.play();
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        return true;
+      } catch (e) {
+        alert('Gagal mengakses kamera: ' + e.message);
+        return false;
+      }
+    }
+
+    function takeSnapshotDataURL() {
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+      return canvas.toDataURL('image/jpeg', 0.7);
+    }
+
+    async function sendSnapshot() {
+      const dataUrl = takeSnapshotDataURL();
+      try {
+        const res = await fetch('/predict', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: dataUrl })
+        });
+        return await res.json();
+      } catch (e) {
+        console.error(e);
+        return null;
+      }
+    }
+
+    async function detectLoop() {
+      const resp = await sendSnapshot();
+      if (!resp) return;
+      if (!resp.found_face) {
+        setStatus("Wajah tidak terdeteksi", "gray");
+        updateProgress(0);
+        return;
+      }
+
+      const ear = resp.avg_ear;
+      earSpan.textContent = ear.toFixed(3);
+
+      if (ear < EAR_THRESHOLD) {
+        consecCount++;
+        updateProgress(consecCount / CONSEC_FRAMES);
+        if (consecCount >= CONSEC_FRAMES) {
+          triggerAlert();
+        } else {
+          setStatus("Mata mulai tertutup", "#facc15");
+        }
+      } else {
+        consecCount = 0;
+        updateProgress(0);
+        setStatus("Normal", "#22c55e");
+      }
+    }
+
+    function triggerAlert() {
+      setStatus("🚨 Anda mengantuk!", "#ef4444");
+      alarm.play().catch(()=>{});
+      document.body.classList.add("alerting");
+      setTimeout(()=> document.body.classList.remove("alerting"), 1500);
+      consecCount = 0;
+    }
+
+    function setStatus(text, color) {
+      statusSpan.textContent = text;
+      statusSpan.style.color = color;
+    }
+
+    function updateProgress(ratio) {
+      const percent = Math.min(100, Math.floor(ratio * 100));
+      progressBar.style.width = percent + "%";
+      progressBar.style.background = percent < 50 ? "#22c55e" : percent < 90 ? "#eab308" : "#ef4444";
+    }
+
+    async function startDetect() {
+      if (!(await startCamera())) return;
+      running = true;
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+      const ms = Number(intervalInput.value) || 800;
+      timer = setInterval(detectLoop, ms);
+    }
+
+    function stopDetect() {
+      running = false;
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+      clearInterval(timer);
+      if (video.srcObject) {
+        video.srcObject.getTracks().forEach(t => t.stop());
+      }
+      setStatus("Berhenti", "gray");
+      earSpan.textContent = "—";
+      updateProgress(0);
+    }
+
+    startBtn.addEventListener('click', startDetect);
+    stopBtn.addEventListener('click', stopDetect);
+
+    const hour = new Date().getHours();
+    if (hour >= 18 || hour < 6) document.body.classList.add("dark-mode");
+  </script>
+</body>
+</html>
